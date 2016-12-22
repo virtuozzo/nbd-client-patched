@@ -28,6 +28,7 @@
 #define NBD_DISCONNECT  _IO( 0xab, 8 )
 #define NBD_SET_TIMEOUT _IO( 0xab, 9 )
 #define NBD_SET_FLAGS _IO( 0xab, 10 )
+#define NBD_CONN_INFO _IOWR( 0xab, 13, nbd_conn_info_t )
 
 enum {
 	NBD_CMD_READ = 0,
@@ -79,4 +80,14 @@ struct nbd_reply {
 	__be32 error;		/* 0 = ok, else error	*/
 	char handle[8];		/* handle you got from request	*/
 };
+
+#define CONN_INFO_LEN	512
+
+typedef struct nbd_conn_info_t_ {
+	uint16_t	set_info;	/* get (0) or set (1) info ? */
+	uint16_t	connected;	/* is nbd connection live? */
+	uint32_t	sock;		/* nbd socket ptr */
+	uint32_t	pid;		/* nbd client pid */
+	char		cidata[CONN_INFO_LEN];	/* byte array with connection info */
+} __attribute__((packed)) nbd_conn_info_t;
 #endif

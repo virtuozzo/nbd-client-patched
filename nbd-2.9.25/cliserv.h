@@ -69,7 +69,23 @@ void setmysockopt(int sock) {
 #ifdef	IPPROTO_TCP
 	size = 1;
 	if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &size, sizeof(int)) < 0)
-		 INFO("(no sockopt/2: %m)");
+	  INFO("(no sockopt/2: %m)");
+	
+	size = 1;
+        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &size, sizeof(int)) < 0)
+	  INFO("(no sockopt/2: %m)");
+	
+	size = 5;
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &size, sizeof(int)) < 0)
+	  INFO("(no sockopt/2: %m)");
+       
+	size = 1;
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &size, sizeof(int)) < 0)
+	  INFO("(no sockopt/2: %m)");
+
+	size = 5;
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &size, sizeof(int)) < 0)
+          INFO("(no sockopt/2: %m)");
 #endif
 #if 0
 	size = 1024;
