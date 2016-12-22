@@ -1,0 +1,185 @@
+diff -ur nbd-2.9.25.orig/cliserv.h nbd-2.9.25/cliserv.h
+--- nbd-2.9.25.orig/cliserv.h	2011-10-01 11:28:58.000000000 +0100
++++ nbd-2.9.25/cliserv.h	2013-02-25 08:36:10.402664193 +0000
+@@ -69,7 +69,23 @@
+ #ifdef	IPPROTO_TCP
+ 	size = 1;
+ 	if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &size, sizeof(int)) < 0)
+-		 INFO("(no sockopt/2: %m)");
++	  INFO("(no sockopt/2: %m)");
++	
++	size = 1;
++        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &size, sizeof(int)) < 0)
++	  INFO("(no sockopt/2: %m)");
++	
++	size = 6;
++        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &size, sizeof(int)) < 0)
++	  INFO("(no sockopt/2: %m)");
++       
++	size = 60;
++        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &size, sizeof(int)) < 0)
++	  INFO("(no sockopt/2: %m)");
++
++	size = 10;
++        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &size, sizeof(int)) < 0)
++          INFO("(no sockopt/2: %m)");
+ #endif
+ #if 0
+ 	size = 1024;
+diff -ur nbd-2.9.25.orig/nbd-client.c nbd-2.9.25/nbd-client.c
+--- nbd-2.9.25.orig/nbd-client.c	2011-10-01 11:28:58.000000000 +0100
++++ nbd-2.9.25/nbd-client.c	2013-02-25 17:00:31.646659801 +0000
+@@ -124,7 +124,8 @@
+ 	return sock;
+ }
+ 
+-void negotiate(int sock, u64 *rsize64, u32 *flags, char* name) {
++void negotiate(int sock, u64 *rsize64, u32 *flags, char* name,
++				char *srvinfobuf, int srvinfolen) {
+ 	u64 magic, size64;
+ 	uint16_t tmp;
+ 	char buf[256] = "\0\0\0\0\0\0\0\0\0";
+@@ -182,16 +183,16 @@
+ 
+ #ifdef NBD_SET_SIZE_BLOCKS
+ 	if ((size64>>12) > (uint64_t)~0UL) {
+-		printf("size = %luMB", (unsigned long)(size64>>20));
++		printf("size = %luMB\n", (unsigned long)(size64>>20));
+ 		err("Exported device is too big for me. Get 64-bit machine :-(\n");
+ 	} else
+-		printf("size = %luMB", (unsigned long)(size64>>20));
++		printf("size = %luMB\n", (unsigned long)(size64>>20));
+ #else
+ 	if (size64 > (~0UL >> 1)) {
+-		printf("size = %luKB", (unsigned long)(size64>>10));
++		printf("size = %luKB\n", (unsigned long)(size64>>10));
+ 		err("Exported device is too big. Get 64-bit machine or newer kernel :-(\n");
+ 	} else
+-		printf("size = %lu", (unsigned long)(size64));
++		printf("size = %lu\n", (unsigned long)(size64));
+ #endif
+ 
+ 	if(!name) {
+@@ -204,8 +205,23 @@
+ 		*flags |= (uint32_t)ntohs(tmp);
+ 	}
+ 
++	memset(buf, 0, 256);
+ 	if (read(sock, &buf, 124) < 0)
+ 		err("Failed/5: %m\n");
++
++	if ( srvinfobuf ) {
++		char srvpath[120];
++		unsigned long long srvbsize=0;
++
++		memset( srvpath, 0, 120);
++		if ( sscanf( buf, "path:%s\nbsize:%llu\n", srvpath, &srvbsize ) == 2 ) {
++			snprintf( srvinfobuf, srvinfolen, "srvpath=%s bsize=%llu", srvpath, srvbsize );
++			printf("server_path=\"%s\", server_bsize=%llu ", srvpath, srvbsize );
++			fflush(stdout);
++		} else {
++			fprintf(stderr,"\nWarning: parsing extended info failed! Buf: \"%s\"\n", buf );
++		}
++	}
+ 	printf("\n");
+ 
+ 	*rsize64 = size64;
+@@ -341,10 +357,12 @@
+ 		{ "timeout", required_argument, NULL, 't' },
+ 		{ 0, 0, 0, 0 }, 
+ 	};
++	char srvinfo[CONN_INFO_LEN];
++	nbd_conn_info_t cinfo;
+ 
+ 	logging();
+ 
+-	while((c=getopt_long_only(argc, argv, "-b:c:d:hnN:pSst:", long_options, NULL))>=0) {
++	while((c=getopt_long_only(argc, argv, "-b:c:d:hnN:U:pSst:", long_options, NULL))>=0) {
+ 		switch(c) {
+ 		case 1:
+ 			// non-option argument
+@@ -421,6 +439,8 @@
+ 		      timeout:
+ 			timeout=strtol(optarg, NULL, 0);
+ 			break;
++		case 'U': /*No-op for UUID info on ps*/
++		        break;
+ 		default:
+ 			fprintf(stderr, "E: option eaten by 42 mice\n");
+ 			exit(EXIT_FAILURE);
+@@ -438,11 +458,22 @@
+ 
+ 	sock = opennet(hostname, port, sdp);
+ 
+-	negotiate(sock, &size64, &flags, name);
++	memset( srvinfo, 0, CONN_INFO_LEN );
++	negotiate(sock, &size64, &flags, name, srvinfo, CONN_INFO_LEN);
+ 	setsizes(nbd, size64, blocksize, flags);
+ 	set_timeout(nbd, timeout);
+ 	finish_sock(sock, nbd, swap);
+ 
++	/* store the server & connection info in the kernel */
++	memset( &cinfo, 0, sizeof(nbd_conn_info_t) );
++	cinfo.set_info = 1;
++	cinfo.pid = (int)getpid();
++
++	snprintf( cinfo.cidata, CONN_INFO_LEN, "host=%s port=%s %s", hostname, port, srvinfo );
++
++	/* ignore error as kernel may not support */
++	ioctl(nbd, NBD_CONN_INFO, &cinfo );
++
+ 	/* Go daemon */
+ 	
+ #ifndef NOFORK
+@@ -452,6 +483,7 @@
+ 	}
+ #endif
+ 	do {
++#if 0
+ #ifndef NOFORK
+ 		if (fork()) {
+ 			/* Due to a race, the kernel NBD driver cannot
+@@ -472,6 +504,7 @@
+ 			exit(0);
+ 		}
+ #endif
++#endif
+ 
+ 		if (ioctl(nbd, NBD_DO_IT) < 0) {
+ 			fprintf(stderr, "Kernel call returned: %m");
+@@ -488,7 +521,8 @@
+ 					close(sock); close(nbd);
+ 					sock = opennet(hostname, port, sdp);
+ 					nbd = open(nbddev, O_RDWR);
+-					negotiate(sock, &new_size, &new_flags, name);
++					memset( srvinfo, 0, CONN_INFO_LEN );
++					negotiate(sock, &new_size, &new_flags, name, srvinfo, CONN_INFO_LEN);
+ 					if (size64 != new_size) {
+ 						err("Size of the device changed. Bye");
+ 					}
+diff -ur nbd-2.9.25.orig/nbd.h nbd-2.9.25/nbd.h
+--- nbd-2.9.25.orig/nbd.h	2011-10-01 11:28:58.000000000 +0100
++++ nbd-2.9.25/nbd.h	2013-02-25 17:00:31.922659801 +0000
+@@ -28,6 +28,7 @@
+ #define NBD_DISCONNECT  _IO( 0xab, 8 )
+ #define NBD_SET_TIMEOUT _IO( 0xab, 9 )
+ #define NBD_SET_FLAGS _IO( 0xab, 10 )
++#define NBD_CONN_INFO _IOWR( 0xab, 13, nbd_conn_info_t )
+ 
+ enum {
+ 	NBD_CMD_READ = 0,
+@@ -79,4 +80,14 @@
+ 	__be32 error;		/* 0 = ok, else error	*/
+ 	char handle[8];		/* handle you got from request	*/
+ };
++
++#define CONN_INFO_LEN	512
++
++typedef struct nbd_conn_info_t_ {
++	uint16_t	set_info;	/* get (0) or set (1) info ? */
++	uint16_t	connected;	/* is nbd connection live? */
++	uint32_t	sock;		/* nbd socket ptr */
++	uint32_t	pid;		/* nbd client pid */
++	char		cidata[CONN_INFO_LEN];	/* byte array with connection info */
++} __attribute__((packed)) nbd_conn_info_t;
+ #endif
